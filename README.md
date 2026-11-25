@@ -3,7 +3,7 @@
 > **Project:** JobShot — Intelligent Job Discovery, Applicant Profile & Application Automation
 > **Owner:** Jayesh Borse
 > **Document date:** 2026-11-25
-> **Status:** Assessment complete · Nothing implemented yet · Waiting to start Phase 1, Task 1.1
+> **Status:** Phase 1 in progress · Task 1.1 ✅ (2026-11-25) · Task 1.2 ✅ · Task 1.3 ✅ (2026-11-26) · Task 1.4 dropped (no old data) · Next: Task 1.5
 > **Project home:** `D:\Interview\Job_Search\` — all work happens here. No separate project folder is created.
 > **Code paths** in this document (for example `db.js`, `profile/`, `db/migrations/`) are relative to `D:\Interview\Job_Search\_pipeline\`.
 
@@ -91,20 +91,41 @@ The project is spread across four places that are not connected to each other.
 
 **Important finding:** the collection, scoring and tailoring logic is already deterministic. It does not need Claude to run.
 
-### 3.2 Existing database schema (from n8n node definitions)
+### 3.2 Existing database schema (verified live, Task 1.1, 2026-11-25)
 
-> Verified live in Task 1.1 — PostgreSQL was stopped during the audit.
+PostgreSQL 18.4 · database **`jobhunter`** · schema `public` only. Other databases on the server (`library_db`, `securitydb`) are unrelated and not touched.
 
 ```
-public.jobs
-  id, company_name (required), job_title (required), location, job_url,
-  job_description, match_score, status varchar(50), created_at,
-  strengths, missing_skills
+public.jobs            101 rows
+  id serial PK, company_name varchar(255) NOT NULL, job_title varchar(255) NOT NULL,
+  location varchar(255), job_url text UNIQUE (jobs_job_url_unique),
+  job_description text, match_score int, status varchar(50) DEFAULT 'NEW',
+  created_at timestamp DEFAULT now, strengths text, missing_skills text
 
-public.applications
-  id, job_id, recruiter_id, email_subject, email_body, application_date,
-  followup_date, status, recruiter_email, generated_subject, generated_email
+public.applications    2 rows (status GENERATED)
+  id serial PK, job_id → jobs(id) ON DELETE CASCADE, recruiter_id → recruiters(id),
+  email_subject, email_body, application_date DEFAULT now, followup_date,
+  status varchar(50) DEFAULT 'DRAFT_CREATED', recruiter_email,
+  generated_subject, generated_email
+
+public.recruiters      0 rows   (not visible in the n8n workflow files)
+  id serial PK, company_name, recruiter_name, email, linkedin_url, created_at
 ```
+
+**Data quality of the existing rows:**
+
+| Check | Result |
+|---|---|
+| Source of jobs | 100 from remoteOK.com, 1 test row (`test-job.com`) |
+| Company name | Mostly `Unknown` (RSS feed has no company field) |
+| Relevant titles | Few. Examples: "Upper Elementary Online Teacher", "Medical Scribe", "Administrator" |
+| Scored (`match_score > 0`) | 2 of 101 |
+| Garbled text (encoding errors) | 42 of 101 |
+| Date range | 18–19 June 2026 |
+
+This confirms problem P2: the June collector stored unrelated global jobs. The rows are kept untouched; the new `jobshot` schema is separate.
+
+**Personal data found in code:** a phone number and email address are hard-coded in 5 scripts (`resume_lib.js`, `daily.js`, `reports.js`, `share_pdf.js`, `shoot_run.js`). This is fine in a local git repo, but must move to the profile/`.env` (Phase 2) **before** the repo is ever pushed to GitHub.
 
 ### 3.3 What works correctly
 
@@ -214,7 +235,7 @@ The scraping was not the problem — it was already scripted. The problem was:
 | P3 AI processing broken | Process only `status = 'NEW'` rows, send the job summary, read skills from the profile, move the API key to a header. |
 | P4 Static dashboard | Generate the dashboard from PostgreSQL with the same design. |
 | P5 Duplicate resumes | Tailor only for jobs you shortlist; reuse when the content hash matches. |
-| P6 Scattered data | One git repo, one PostgreSQL database as the source of truth, CSV history imported. |
+| P6 Scattered data | One git repo, one PostgreSQL database as the source of truth. Old CSV history is **not** imported (owner decision); the product starts from the 25 Nov 2026 run. |
 | P7 ToS risk | Stop LinkedIn/Naukri scraping; parse their job-alert **emails** from Gmail instead. Prefer official ATS APIs. |
 | P8 Missing features | Phases 2–6 (profile, form automation, contacts, email, tracking). |
 
@@ -343,7 +364,7 @@ The scraping was not the problem — it was already scripted. The problem was:
 
 | Table | Key fields | Purpose |
 |---|---|---|
-| `companies` | name, normalized_name (UNIQUE), website, careers_url, ats_type, ats_slug | One row per company; enables ATS reuse |
+| `companies` | id, company_name, normalized_name (UNIQUE), company_website, career_page_url, industry, company_size, headquarters, logo_url, linkedin_url, ats_type, ats_slug, created_at, updated_at | One row per company; dedup by normalized_name; enables ATS reuse. Descriptive fields filled only from public data, never invented |
 | `jobs` | company_id, title, location, work_mode, exp_min, exp_max, salary_text, skills[], description, summary (≤300 chars), description_hash, posted_at, first_seen_at, last_seen_at, verified_at, verification_status, apply_url, source, source_job_id, **canonical_key UNIQUE**, fit_score, bucket, missing_skills[], status | Single job record; dedup key |
 | `job_sources` | job_id, source, source_url, seen_at | Every place a job was found |
 | `collection_runs` | source, started_at, finished_at, fetched, new_count, dup_count, errors | Checkpoints and metrics |
@@ -405,7 +426,7 @@ D:\Interview\Job_Search\               (JobShot project root, git repository)
 │   ├── harvest.js, aggregators.js, score.js, resume_lib.js,
 │   │   shoot_run.js, reports.js, share_pdf.js, qc.js …   existing, kept in place
 │   ├── session_usage.js               Claude token-usage analyzer (Task 1.1)
-│   ├── db.js, collect.js, import_csv.js, cli.js            Phase 1
+│   ├── db.js, jobmap.js, collect.js, cli.js                Phase 1
 │   ├── db\migrations\                 V001__jobshot_schema.sql, V002__… (Phase 1+)
 │   ├── dashboard\                     dashboard generator, same design (Phase 1)
 │   ├── n8n\                           exported workflow JSON (Phase 1)
@@ -425,7 +446,7 @@ D:\Interview\Job_Search\               (JobShot project root, git repository)
 
 - Subfolders under `_pipeline\` are created only when their phase starts.
 - Existing working scripts are not moved or rewritten.
-- `D:\Jayesh_Job_Applications\` is left as it is; its 10-job tracker is imported into the database in Task 1.4.
+- `D:\Jayesh_Job_Applications\` is left as it is and is not imported. Old trackers and CSVs stay on disk as archives only.
 
 ---
 
@@ -440,7 +461,7 @@ Effort assumes about 4 focused hours per day. One task at a time; each task is t
 | 1.1 | Start PostgreSQL; inspect the live schema; `git init` in `D:\Interview\Job_Search` with `.gitignore`; save the token analyzer and baseline | `.gitignore`, `.env.example`, `_pipeline/session_usage.js`, `JobShot_Token_Baseline.md` | Live schema documented; repo committed; baseline numbers saved |
 | 1.2 | Migration V001: `companies`, `jobs`, `job_sources`, `collection_runs`, `status_history`, `audit_log` | `_pipeline/db/migrations/V001__jobshot_schema.sql` | Migration applies cleanly; existing tables unchanged |
 | 1.3 | Add `db.js` and `collect.js` that run the existing harvest, aggregators and score scripts and write to PostgreSQL with dedup | `_pipeline/db.js`, `_pipeline/collect.js` | Run 1 stores jobs; run 2 adds 0 duplicates |
-| 1.4 | Import CSV history (`All_Jobs.csv`, `Historical_Jobs.csv`, and the 10-job tracker in `D:\Jayesh_Job_Applications`) | `_pipeline/import_csv.js` | Row counts match; nothing deleted |
+| 1.4 | ~~Import CSV history~~ **Dropped 2026-11-26 (owner decision):** no old data in the product. The database starts from the 25 Nov 2026 run; old CSVs stay on disk as archives | — | Database holds only data from 25 Nov 2026 onwards |
 | 1.5 | Compliance switch: disable LinkedIn guest-page and Naukri browser scraping; add Greenhouse/Ashby boards; job-alert email parsing | `_pipeline/harvest.js`, `_pipeline/aggregators.js`, n8n Gmail workflow | Collection works without scraping blocked sites |
 | 1.6 | Scheduling: n8n (or Task Scheduler) runs `collect.js`; fix or retire the broken n8n workflows | `_pipeline/n8n/*.json` | Scheduled run completes with 0 Claude tokens |
 | 1.7 | `jobshot shortlist --compact` CLI; update the existing `CLAUDE.md` with a short review routine replacing SHOOT-in-Claude | `_pipeline/cli.js`, `CLAUDE.md` | Shortlist prints ~30 rows in compact form |
@@ -450,8 +471,32 @@ Effort assumes about 4 focused hours per day. One task at a time; each task is t
 - **Database changes:** V001.
 - **n8n changes:** collector schedule; old collector retired or fixed.
 - **MCP:** none.
-- **Testing:** dedup test (run twice), row-count test after import, scheduled-run test, token measurement.
+- **Testing:** dedup test (run twice), scheduled-run test, token measurement.
 - **Acceptance:** collection uses 0 Claude tokens; no duplicates; dashboard current; review session measured.
+- **Quality gate (parity test):** the old Claude-driven SHOOT run is retired only after the scheduled pipeline is compared with the 25 Nov 2026 results and keeps the same quality of fresher jobs.
+
+  25 Nov baseline, Apply First jobs by source (33 in total):
+
+  | Source | Apply First jobs |
+  |---|---|
+  | Naukri | 20 |
+  | Internshala | 10 |
+  | Lever | 2 |
+  | Employer site | 1 |
+
+  The shareable PDF had 150 verified jobs; 66 of them came from Naukri.
+
+  Naukri was collected by Claude's browser, so the script pipeline needs a replacement for it (Naukri job-alert emails parsed from Gmail) before the gate can pass.
+
+### Why the June n8n collector found no fresher jobs (and why that is not the plan)
+
+| June n8n collector | 25 Nov run that worked |
+|---|---|
+| Sources: RemoteOK and WeWorkRemotely (global, remote, mostly senior) | Sources: Naukri, Internshala, 12 Indian fresher sites, company ATS feeds |
+| Bug: `Job Normalizer` never returned accepted jobs, so 0 valid rows were saved | Deterministic Node scripts (`harvest.js`, `aggregators.js`, `score.js`) with fresher/India filters |
+| Strict title allowlist of 7 phrases | Broad title rules plus experience parsing (0–2 years) |
+
+The plan does **not** go back to the June workflow. It schedules the same scripts that produced the 25 Nov results.
 
 ### Phase 2 — Master Applicant Profile (5–7 days)
 
@@ -645,7 +690,7 @@ No percentage reduction is promised until before/after numbers are measured.
 |---|---|---|
 | 1 | Repository home | ✅ **Decided:** `D:\Interview\Job_Search` — all work happens there; no separate project folder |
 | 2 | Scheduler | n8n run natively via `npm` (saves ~2 GB RAM vs Docker) so it can run Node scripts — recent n8n disables the "Execute Command" node by default, so it needs enabling. Alternative: Windows Task Scheduler for collection + n8n in Docker for email |
-| 3 | Sender email | Job forms currently use `borsejayesh22@gmail.com`. Confirm whether that is also the cold-email sender or a new address will be created. Never the Claude account email |
+| 3 | Sender email | Job forms currently use a dedicated job-search Gmail address (kept private). Confirm whether that is also the cold-email sender or a new address will be created. Never the Claude account email |
 | 4 | Database password | You put it in `.env` or `pgpass` yourself; Claude never needs to see it |
 | 5 | Profile service stack (Phase 2) | Decide at Phase 2: Spring Boot (strong interview value for a Java backend role) or Node/Express (same language as the pipeline) |
 
@@ -695,4 +740,14 @@ Node.js · PostgreSQL · n8n · Playwright · LaTeX · Gmail API / SMTP · Git �
 
 ---
 
-*Next step: Phase 1, Task 1.1 — start PostgreSQL, inspect the live schema, set up git, save the token baseline.*
+*Next step: Phase 1, Task 1.5 — compliance switch: stop LinkedIn guest-page and Naukri browser scraping, use job-alert emails and official ATS feeds, then run the live collectors through `collect.js`.*
+
+## Progress log
+
+| Date | Task | Result |
+|---|---|---|
+| 2026-11-25 | 1.1 | PostgreSQL started; live schema documented (`jobhunter`: jobs 101, applications 2, recruiters 0); git initialised (commit `1b08a62`); token baseline saved |
+| 2026-11-26 | 1.2 | `V001__jobshot_schema.sql` applied in one transaction: 6 tables + `schema_migrations`, `updated_at` triggers, automatic `status_history` trigger. Tested: dedup rejects duplicate `canonical_key`, invalid status rejected, status change logged with actor/note. `public` tables unchanged |
+| 2026-11-26 | 1.3 | V002 adds 8 scoring columns (deadline, job_family, eligibility, eligibility_note, flags, match_reasons, score_breakdown, applicants_text). New `db.js` (pool + transactions, password from pgpass), `jobmap.js` (pure mapping: company/city normalization, experience parsing, ATS detection, fingerprint key `fp:sha1(company\|title\|city)`), `collect.js` (runs existing collectors unchanged, loads `scored_DAY.json`, one-line JSON output, logs to `data/logs/`). Driver `pg@8.13.1`. Tested in load mode: 24 Nov → 138 new; 25 Nov → 86 new + 66 seen again; reload → 0 new. 224 jobs, 188 companies, 1 cross-source duplicate merged (Qualcomm: LinkedIn + Naukri). Live collector steps not run yet (Task 1.5 compliance first) |
+| 2026-11-26 | 1.4 | **Dropped.** Owner decision: no old data in the product. `jobshot` data tables were cleared (TRUNCATE, logged as `data.reset` in `audit_log`) and reloaded with the 25 Nov 2026 run only: 152 jobs (33 Apply First, 31 Good Match, 88 Stretch), 133 companies. Schema, migrations and `public` tables untouched |
+| 2026-11-26 | 1.5 (in progress) | Checked robots.txt of every collected site. New `robots.js` gate on every collector request: robots.txt rules (longest match, `*`/`$`), crawl delay + 1 s minimum per host, honest User-Agent `JobShot/1.0`; documented job APIs (Lever, SmartRecruiters, Greenhouse, Ashby) use API terms. Results: LinkedIn disallows all → `harvest.js linkedin` disabled, LinkedIn links marked unconfirmed in `aggregators.js`; Freshershunt and OffCampusJobs4u disallow `/feed/` → skipped automatically; Internshala job paths, Jobs Adda, Workday allowed. `CLAUDE.md` now forbids scraping LinkedIn/Naukri/Indeed. 12 robots rule tests pass. **Pending:** check results of the first live `node collect.js` run (26 Nov), job-alert email parsing (Naukri/LinkedIn), Greenhouse/Ashby boards |
